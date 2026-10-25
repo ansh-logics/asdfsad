@@ -1,12 +1,13 @@
-"""FastAPI app: routes only. All data logic lives in data / selection / metrics."""
+"""FastAPI app: routes only. All data logic lives in data / selection / metrics / store."""
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from app import config, data, metrics, selection
+from app import config, metrics, selection
+from app.store import get_store
 
 
 class ForecastRow(BaseModel):
@@ -44,8 +45,7 @@ class Meta(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Historical, fixed data: load once (committed snapshot by default), serve every request from memory.
-    actuals, forecasts, app.state.data_source = data.load_data()
-    app.state.comparison = selection.build_comparison(forecasts, actuals)
+    get_store()  # warm the cache at startup where the runtime supports it
     yield
 
 
@@ -53,10 +53,10 @@ app = FastAPI(title="UK wind forecast vs actual", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["GET"])
 
 
-def _comparison(request: Request, start: datetime | None, end: datetime | None):
+def _comparison(start: datetime | None, end: datetime | None):
     if start is not None and end is not None and start >= end:
         raise HTTPException(status_code=400, detail="start must be before end")
-    return selection.filter_range(request.app.state.comparison, start, end)
+    return selection.filter_range(get_store().comparison, start, end)
 
 
 @app.get("/api/health")
@@ -65,7 +65,7 @@ def health():
 
 
 @app.get("/api/meta", response_model=Meta)
-def meta(request: Request):
+def meta():
     """The assumptions behind every number: scope, decision gate and data source."""
     return {
         "scope_start": config.SCOPE_START.to_pydatetime(),
@@ -73,23 +73,23 @@ def meta(request: Request):
         "gate_time": config.GATE_TIME,
         "days_before": config.DAYS_BEFORE,
         "timezone": config.LOCAL_TZ,
-        "data_source": request.app.state.data_source,
+        "data_source": get_store().data_source,
     }
 
 
 @app.get("/api/forecast", response_model=list[ForecastRow])
-def forecast(request: Request, start: datetime | None = None, end: datetime | None = None):
+def forecast(start: datetime | None = None, end: datetime | None = None):
     """Decision-time forecast and hourly actual for each hour in [start, end). Naive times are UTC."""
-    return selection.to_records(_comparison(request, start, end))
+    return selection.to_records(_comparison(start, end))
 
 
 @app.get("/api/accuracy", response_model=Accuracy)
-def accuracy(request: Request, start: datetime | None = None, end: datetime | None = None):
+def accuracy(start: datetime | None = None, end: datetime | None = None):
     """MAE, bias and P90 shortfall over [start, end). Naive times are UTC."""
-    return metrics.accuracy(_comparison(request, start, end))
+    return metrics.accuracy(_comparison(start, end))
 
 
 @app.get("/api/accuracy/by-hour", response_model=list[HourAccuracy])
-def accuracy_by_hour(request: Request, start: datetime | None = None, end: datetime | None = None):
+def accuracy_by_hour(start: datetime | None = None, end: datetime | None = None):
     """MAE and bias per UK hour of day over [start, end). Naive times are UTC."""
-    return metrics.accuracy_by_hour(_comparison(request, start, end))
+    return metrics.accuracy_by_hour(_comparison(start, end))
