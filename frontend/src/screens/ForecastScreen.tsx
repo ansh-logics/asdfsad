@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import {
   CartesianGrid,
   Legend,
@@ -9,11 +9,13 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { fetchForecast, type ForecastRow, type Meta, type Range } from '../api'
-import { formatAxisTick, formatDateTime, formatMW, timeTicks } from '../format'
+import { fetchAccuracy, fetchForecast, type ForecastRow, type Meta, type Range } from '../api'
+import { formatAxisTick, formatDateTime, formatGW, formatMW, timeTicks } from '../format'
+import { useRangeQuery } from '../useRangeQuery'
 
 interface ChartRow extends ForecastRow {
   t: number
+  plan: number | null
 }
 
 interface Props {
@@ -22,25 +24,22 @@ interface Props {
 }
 
 export default function ForecastScreen({ meta, range }: Props) {
-  // Results are tagged with the range they were fetched for, so a new range shows "Loading…"
-  // without resetting state inside the effect, and a slow old response can't overwrite a newer one.
-  const [result, setResult] = useState<{ range: Range; rows?: ChartRow[]; error?: string } | null>(null)
-
-  useEffect(() => {
-    let stale = false
-    fetchForecast(range)
-      .then((data) => {
-        if (!stale) setResult({ range, rows: data.map((r) => ({ ...r, t: Date.parse(r.startTime) })) })
-      })
-      .catch((e: Error) => !stale && setResult({ range, error: e.message }))
-    return () => {
-      stale = true
-    }
-  }, [range])
-
-  const current = result?.range === range ? result : null
-  const rows = current?.rows ?? null
-  const error = current?.error ?? null
+  const { data, error } = useRangeQuery(range, fetchForecast)
+  const accuracy = useRangeQuery(range, fetchAccuracy)
+  const p90 = accuracy.data?.p90_shortfall_mw ?? null
+  const showPlan = p90 !== null && p90 > 0
+  // Plan level = forecast minus the P90 shortfall: the wind a trader plans against to be covered
+  // 9 hours in 10. Clamped at 0 because generation can't be negative.
+  const rows = useMemo<ChartRow[] | null>(
+    () =>
+      data &&
+      data.map((r) => ({
+        ...r,
+        t: Date.parse(r.startTime),
+        plan: showPlan ? Math.max(0, r.forecast - p90) : null,
+      })),
+    [data, p90, showPlan],
+  )
   const ticks = useMemo(() => timeTicks(rows?.map((r) => r.t) ?? []), [rows])
 
   return (
@@ -51,6 +50,13 @@ export default function ForecastScreen({ meta, range }: Props) {
           Each point is the forecast a trader could actually have used: the latest one published by{' '}
           {meta.gate_time} UK time the day before delivery. Hover to see when it was published.
         </p>
+        {showPlan && (
+          <p className="muted small">
+            Dashed grey line = plan level, forecast − {formatGW(p90)} (the P90 shortfall for the selected
+            period). Actual wind stayed above it in 9 hours out of 10. It's measured on the same period, so it
+            looks back; it isn't a forecast.
+          </p>
+        )}
       </header>
 
       {error && <p className="error">Couldn't load forecasts: {error}</p>}
@@ -76,7 +82,7 @@ export default function ForecastScreen({ meta, range }: Props) {
                 stroke="var(--muted)"
                 width={56}
               />
-              <Tooltip content={<ForecastTooltip gateTime={meta.gate_time} />} />
+              <Tooltip content={<ForecastTooltip gateTime={meta.gate_time} p90={showPlan ? p90 : null} />} />
               <Legend />
               <Line
                 name={`Forecast at ${meta.gate_time} gate`}
@@ -94,6 +100,17 @@ export default function ForecastScreen({ meta, range }: Props) {
                 dot={false}
                 isAnimationActive={false}
               />
+              {showPlan && (
+                <Line
+                  name={`Plan level (forecast − ${formatGW(p90)}, P90)`}
+                  dataKey="plan"
+                  stroke="var(--plan)"
+                  strokeWidth={1.25}
+                  strokeDasharray="5 4"
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              )}
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -104,11 +121,12 @@ export default function ForecastScreen({ meta, range }: Props) {
 
 interface TooltipProps {
   gateTime: string
+  p90: number | null
   active?: boolean
   payload?: ReadonlyArray<{ payload: ChartRow }>
 }
 
-function ForecastTooltip({ gateTime, active, payload }: TooltipProps) {
+function ForecastTooltip({ gateTime, p90, active, payload }: TooltipProps) {
   if (!active || !payload?.length) return null
   const row = payload[0].payload
   const diff = row.forecast - row.actual
@@ -123,6 +141,12 @@ function ForecastTooltip({ gateTime, active, payload }: TooltipProps) {
         <span className="swatch" style={{ background: 'var(--actual)' }} />
         Actual <strong>{formatMW(row.actual)}</strong>
       </div>
+      {p90 !== null && row.plan !== null && (
+        <div>
+          <span className="swatch" style={{ background: 'var(--plan)' }} />
+          Plan level <strong>{formatMW(row.plan)}</strong>
+        </div>
+      )}
       <div className={diff >= 0 ? 'over' : 'under'}>
         {diff >= 0 ? 'Over' : 'Under'}-forecast by {formatMW(Math.abs(diff))}
       </div>
