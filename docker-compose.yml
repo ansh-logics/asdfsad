@@ -1,0 +1,25 @@
+# Local full stack: API on http://localhost:8000, UI on http://localhost:5173
+services:
+  api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        # The browser calls the API directly, so this is the host-side URL, not the compose service name.
+        VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy

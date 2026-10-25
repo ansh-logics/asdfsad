@@ -31,7 +31,7 @@ The brief says: *"consider data relevant only for purchase decisions to be made 
 The backend doesn't call Elexon on each request. It loads a committed snapshot of the January data from `backend/data/` (about 105 KB).
 
 - **Files:** `actuals.csv.gz` (half-hourly FUELHH wind) and `forecasts.csv.gz` (every WINDFOR publish in the window), plus `meta.json` with the fetch time.
-  - They're raw inputs, so the selection rule still runs at startup.
+  - They're raw inputs, so the selection rule still runs when the app loads its data.
   - They're `.csv.gz` because the root `.gitignore` excludes `*.csv`.
 - **Regenerate:** run `cd backend && ../.venv/bin/python -m scripts.build_snapshot`.
 - **If the files are missing:** the app logs a warning and fetches live from Elexon. If that also fails, the app won't start.
@@ -39,9 +39,17 @@ The backend doesn't call Elexon on each request. It loads a committed snapshot o
 
 ## Running locally
 
+**With Docker** (API on http://localhost:8000, UI on http://localhost:5173):
+
+```bash
+docker compose up --build
+```
+
+**Without Docker:**
+
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r backend/requirements.txt
+.venv/bin/pip install -r backend/requirements-dev.txt
 
 cd backend
 ../.venv/bin/python -m pytest              # tests, no network
@@ -55,9 +63,17 @@ npm run dev                                # UI on :5173
 
 If the UI runs on another origin, set `CORS_ORIGINS` (comma-separated) for the backend.
 
-## Deployment
+## Deployment (Vercel)
 
-- **Backend:** Heroku (Docker), with `CORS_ORIGINS` set to the Vercel URL.
-- **Frontend:** Vercel, with `VITE_API_URL` set to the Heroku URL.
+There are two Vercel projects from this repo:
+
+| Project | Root directory | Settings |
+|---|---|---|
+| Backend | `backend` | FastAPI preset (entry point `index.py`). Env: `CORS_ORIGINS` = the frontend URL. |
+| Frontend | `frontend` | Vite preset. Env: `VITE_API_URL` = the backend URL, no trailing slash. |
+
+- **Data:** the backend serves the committed snapshot in `backend/data/`, so it never waits on Elexon.
+- **Loading:** data is loaded on the first request and cached for the life of the function instance. It isn't loaded at startup because serverless runtimes don't reliably run startup hooks.
+- **Docker:** stays in the repo for local runs only.
 
 Exploration is in `notebooks/01_explore.ipynb`.
